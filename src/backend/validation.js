@@ -1,29 +1,18 @@
 /*
 =============================================================================
 MODULE: backend/validation.js
-VERSION: v8.1-SSOT-MASTER
-BASE: BIBLIA v8.0 §13.1 + ANEXO SSOT v8.1 (C-01 a C-07)
-RESPONSIBILITY: Validacion centralizada de enums, aserciones estructurales
-                y normalizacion READ-ONLY de estados legacy (EOL 31/12/2026).
+VERSION: v11.0-SSOT-CLEAN
+BASE: BIBLIA v10.0 §6.5 + §12
+RESPONSIBILITY: Validacion centralizada. Sin bloqueos innecesarios.
 STANDARDS: G10 ASCII Strict. No console.log. No secretos.
-
-CORRECTIONS APPLIED (ANEXO v8.1):
-  - C-02: assertMapaStaff valida rolBookings + rolWebsite
-  - C-03: assertMapaStaff valida memberId (no staffMemberId)
-  - C-05: assertServiciosCatalogo valida locationId Multi Reference
-  - C-06: assertServiciosCatalogo valida mainMedia Image
-  - ADR-17: BOOKING_TYPE.DUAL_F1/DUAL_F2 (SNAKE_CASE)
-  - SSOT-07: Validacion runtime centralizada obligatoria
 =============================================================================
 */
 
 import { logger } from "backend/logger";
 import {
     BOOKING_STATUS,
-    BOOKING_TYPE,
     PAYMENT_STATUS,
-    PAYMENT_METHOD,
-    MOVEMENT_TYPE,
+    BOOKING_TYPE,
     INVENTORY_MOVEMENT_TYPE,
     MAGNITUDE,
     NEGATIVE_INVENTORY_MOVEMENT_TYPES,
@@ -43,6 +32,8 @@ import {
     CODIGO_IMPUESTO,
     TIPO_IMPOSITIVO_VALIDOS,
     CHANNEL_TYPE,
+    MOVEMENT_TYPE,
+    PAYMENT_METHOD,
     normalizeBookingType,
     isDualBookingType,
     isValidGuid,
@@ -51,14 +42,14 @@ import {
 const log = logger;
 
 // =============================================================================
-// BLOQUE 1 - GENERIC ENUM ASSERTION (BIBLIA 9.4 / SSOT-07)
+// BLOQUE 1 - GENERIC ENUM ASSERTION (BIBLIA §6.5)
 // =============================================================================
 
 export function assertValidEnum(value, enumObject, fieldName) {
     const allowed = Object.values(enumObject);
     if (value === undefined || value === null || !allowed.includes(value)) {
         throw new Error(
-            `SCHEMA_VIOLATION: ${fieldName}="${String(value)}" not in canonical enum [${allowed.join(", ")}]`
+            `SCHEMA_VIOLATION: ${fieldName}="${String(value)}" not in [${allowed.join(", ")}]`
         );
     }
     return value;
@@ -68,76 +59,8 @@ function _nonEmpty(v) {
     return typeof v === "string" && v.trim().length > 0;
 }
 
-function _canonicalKey(value) {
-    return String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
-
 // =============================================================================
-// BLOQUE 2 - READ-ONLY NORMALIZERS (EOL 31/12/2026, BIBLIA 17)
-// Nunca inventan datos: valores desconocidos pasan intactos para que
-// assertValidEnum falle ruidosamente.
-// =============================================================================
-
-const PAYMENT_LEGACY_MAP = Object.freeze({
-    UNPAID: PAYMENT_STATUS.NOT_PAID,
-    NOPAGADO: PAYMENT_STATUS.NOT_PAID,
-    NO_PAGADO: PAYMENT_STATUS.NOT_PAID,
-    PAGADO: PAYMENT_STATUS.PAID,
-    PENDIENTEPAGO: PAYMENT_STATUS.PENDING_PAYMENT,
-    PENDIENTE_PAGO: PAYMENT_STATUS.PENDING_PAYMENT,
-    PENDIENTEASIENTO: PAYMENT_STATUS.PENDING_LEDGER,
-    PENDIENTE_ASIENTO: PAYMENT_STATUS.PENDING_LEDGER,
-    REEMBOLSADO: PAYMENT_STATUS.REFUNDED,
-    REEMBOLSADOPARCIAL: PAYMENT_STATUS.PARTIALLY_REFUNDED,
-    REEMBOLSADO_PARCIAL: PAYMENT_STATUS.PARTIALLY_REFUNDED,
-    EXENTO: PAYMENT_STATUS.EXEMPT,
-});
-
-const BOOKING_LEGACY_MAP = Object.freeze({
-    CONFIRMADO: BOOKING_STATUS.CONFIRMED,
-    CANCELADO: BOOKING_STATUS.CANCELED,
-    REEMBOLSADO: BOOKING_STATUS.REFUNDED,
-    PENDIENTE: BOOKING_STATUS.PENDING,
-    CREADA: BOOKING_STATUS.CREATED,
-    RECHAZADA: BOOKING_STATUS.DECLINED,
-    LISTADEESPERA: BOOKING_STATUS.WAITING_LIST,
-    ACTUALIZADA: BOOKING_STATUS.UPDATED,
-});
-
-export function normalizePaymentStatus(raw) {
-    const s = String(raw ?? "").trim();
-    if (!s) return s;
-    const direct = Object.values(PAYMENT_STATUS);
-    if (direct.includes(s)) return s;
-    const mapped = PAYMENT_LEGACY_MAP[_canonicalKey(s)];
-    if (mapped !== undefined) {
-        log.warn("legacy paymentStatus normalized on read", {
-            raw: s,
-            canonical: mapped,
-        });
-        return mapped;
-    }
-    return s;
-}
-
-export function normalizeBookingStatus(raw) {
-    const s = String(raw ?? "").trim();
-    if (!s) return s;
-    const direct = Object.values(BOOKING_STATUS);
-    if (direct.includes(s)) return s;
-    const mapped = BOOKING_LEGACY_MAP[_canonicalKey(s)];
-    if (mapped !== undefined) {
-        log.warn("legacy bookingStatus normalized on read", {
-            raw: s,
-            canonical: mapped,
-        });
-        return mapped;
-    }
-    return s;
-}
-
-// =============================================================================
-// BLOQUE 3 - CitasF2 ASSERTION (BIBLIA 13.2 / hooks)
+// BLOQUE 2 - CitasF2 ASSERTION (BIBLIA §12.2)
 // =============================================================================
 
 export function assertCitasF2(item) {
@@ -145,23 +68,14 @@ export function assertCitasF2(item) {
         throw new Error("SCHEMA_VIOLATION: CitasF2 item must be an object");
     }
 
-    assertValidEnum(
-        normalizeBookingStatus(item.bookingStatus),
-        BOOKING_STATUS,
-        "bookingStatus"
-    );
-    assertValidEnum(
-        normalizePaymentStatus(item.paymentStatus),
-        PAYMENT_STATUS,
-        "paymentStatus"
-    );
+    assertValidEnum(item.bookingStatus, BOOKING_STATUS, "bookingStatus");
+    assertValidEnum(item.paymentStatus, PAYMENT_STATUS, "paymentStatus");
 
-    // ADR-17: canonical SNAKE_CASE (DUAL_F1/DUAL_F2)
     const canonicalBookingType = normalizeBookingType(item.bookingType);
     assertValidEnum(canonicalBookingType, BOOKING_TYPE, "bookingType");
 
     if (!_nonEmpty(item.traceId)) {
-        throw new Error("SCHEMA_VIOLATION: CitasF2 requires traceId (SSOT-12)");
+        throw new Error("SCHEMA_VIOLATION: CitasF2 requires traceId");
     }
     if (!_nonEmpty(item.bookingId)) {
         throw new Error("SCHEMA_VIOLATION: CitasF2 requires bookingId");
@@ -170,18 +84,15 @@ export function assertCitasF2(item) {
         throw new Error("SCHEMA_VIOLATION: CitasF2.bookingId must be a valid GUID");
     }
 
-    const isDual = isDualBookingType(canonicalBookingType);
-    if (isDual && !_nonEmpty(item.pairToken)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: DUAL_F1/DUAL_F2 requires pairToken (BIBLIA 16.2)"
-        );
+    if (isDualBookingType(canonicalBookingType) && !_nonEmpty(item.pairToken)) {
+        throw new Error("SCHEMA_VIOLATION: DUAL requires pairToken");
     }
 
     return true;
 }
 
 // =============================================================================
-// BLOQUE 4 - MapaStaff ASSERTION (ANEXO v8.1 C-02/C-03)
+// BLOQUE 3 - MapaStaff ASSERTION (BIBLIA §5.9)
 // =============================================================================
 
 export function assertRolBookings(value) {
@@ -197,16 +108,12 @@ export function assertMapaStaff(item) {
         throw new Error("SCHEMA_VIOLATION: MapaStaff item must be an object");
     }
 
-    // C-03: memberId (no staffMemberId)
     if (!_nonEmpty(item.memberId)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: MapaStaff requires memberId (ANEXO v8.1 C-03)"
-        );
+        throw new Error("SCHEMA_VIOLATION: MapaStaff requires memberId");
     }
     if (!isValidGuid(item.memberId)) {
         throw new Error("SCHEMA_VIOLATION: MapaStaff.memberId must be a valid GUID");
     }
-
     if (!_nonEmpty(item.resourceId)) {
         throw new Error("SCHEMA_VIOLATION: MapaStaff requires resourceId");
     }
@@ -214,33 +121,26 @@ export function assertMapaStaff(item) {
         throw new Error("SCHEMA_VIOLATION: MapaStaff.resourceId must be a valid GUID");
     }
 
-    // C-02: rolBookings + rolWebsite (no staffRole)
     assertRolBookings(item.rolBookings);
     assertRolWebsite(item.rolWebsite);
 
     if (!_nonEmpty(item.staffName)) {
         throw new Error("SCHEMA_VIOLATION: MapaStaff requires staffName");
     }
-    if (String(item.staffName).length > 100) {
-        throw new Error("SCHEMA_VIOLATION: MapaStaff.staffName max 100 chars");
-    }
-
     if (!_nonEmpty(item.traceId)) {
-        throw new Error("SCHEMA_VIOLATION: MapaStaff requires traceId (SSOT-12)");
-    }
-
-    // C-01: campo 'active' prohibido
-    if ("active" in item) {
-        throw new Error(
-            "SCHEMA_VIOLATION: MapaStaff.active prohibido (ANEXO v8.1 C-01)"
-        );
+        throw new Error("SCHEMA_VIOLATION: MapaStaff requires traceId");
     }
 
     return true;
 }
 
 // =============================================================================
-// BLOQUE 5 - ServiciosCatalogo ASSERTION (ANEXO v8.1 C-05/C-06)
+// BLOQUE 4 - ServiciosCatalogo ASSERTION (BIBLIA §5.7)
+// SIN BLOQUEOS INNecesarios:
+//   - mainMedia: acepta URL texto O objeto Image (pendiente ADR)
+//   - locationId: acepta texto plano (estado real del CMS)
+//   - status: NO se valida (pendiente ADR)
+//   - Campo 'active': prohibido (eliminado globalmente)
 // =============================================================================
 
 export function assertServiciosCatalogo(item) {
@@ -249,9 +149,7 @@ export function assertServiciosCatalogo(item) {
     }
 
     if (!_nonEmpty(item.serviceId) || !isValidGuid(item.serviceId)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: ServiciosCatalogo.serviceId must be a valid GUID"
-        );
+        throw new Error("SCHEMA_VIOLATION: ServiciosCatalogo.serviceId must be a valid GUID");
     }
     if (!_nonEmpty(item.slug)) {
         throw new Error("SCHEMA_VIOLATION: ServiciosCatalogo requires slug");
@@ -260,23 +158,26 @@ export function assertServiciosCatalogo(item) {
         throw new Error("SCHEMA_VIOLATION: ServiciosCatalogo requires sku");
     }
 
-    assertValidEnum(item.status, CATALOG_STATES, "status");
-    assertValidEnum(item.itemNature, ITEM_NATURE, "itemNature");
+    // status: NO se valida. Pendiente ADR (BIBLIA §6.4).
+    // Se acepta cualquier valor existente en el CMS.
 
-    // Par fiscal obligatorio
-    if (
-        item.tipoImpositivo !== undefined &&
-        !TIPO_IMPOSITIVO_VALIDOS.includes(Number(item.tipoImpositivo))
-    ) {
-        throw new Error(
-            "SCHEMA_VIOLATION: tipoImpositivo must be one of [0, 0.04, 0.10, 0.21]"
-        );
+    if (item.itemNature !== undefined) {
+        assertValidEnum(item.itemNature, ITEM_NATURE, "itemNature");
+    }
+
+    // Fiscal: tipoImpositivo obligatorio si presente
+    if (item.tipoImpositivo !== undefined) {
+        if (!TIPO_IMPOSITIVO_VALIDOS.includes(Number(item.tipoImpositivo))) {
+            throw new Error(
+                "SCHEMA_VIOLATION: tipoImpositivo must be one of [0, 0.04, 0.10, 0.21]"
+            );
+        }
     }
     if (item.codigoImpuesto !== undefined) {
         assertValidEnum(item.codigoImpuesto, CODIGO_IMPUESTO, "codigoImpuesto");
     }
 
-    // Duraciones: suma exacta sin fallback (BIBLIA 2.1)
+    // Duraciones: suma exacta solo si allowCombine
     const phase1 = Number(item.phase1Duration) || 0;
     const exposure = Number(item.exposureDuration) || 0;
     const phase2 = Number(item.phase2Duration) || 0;
@@ -290,9 +191,7 @@ export function assertServiciosCatalogo(item) {
             );
         }
         if (exposure > 120) {
-            throw new Error(
-                "SCHEMA_VIOLATION: exposureDuration must be <= 120 minutes"
-            );
+            throw new Error("SCHEMA_VIOLATION: exposureDuration must be <= 120 minutes");
         }
     }
 
@@ -304,53 +203,36 @@ export function assertServiciosCatalogo(item) {
         for (const lp of linked) {
             const id = typeof lp === "object" ? lp?._id || lp?.id : lp;
             if (!isValidGuid(String(id))) {
-                throw new Error(
-                    "SCHEMA_VIOLATION: linkedPhases must be a valid GUID (never slug)"
-                );
+                throw new Error("SCHEMA_VIOLATION: linkedPhases must be a valid GUID");
             }
         }
     }
 
-    // C-05: locationId Multi Reference (array de GUIDs o refs Wix)
+    // locationId: acepta texto plano (estado real del CMS - BIBLIA §5.7 nota 4)
+    // NO se exige Multi Reference hasta migracion efectiva.
     if (item.locationId !== undefined && item.locationId !== null) {
-        const locations = Array.isArray(item.locationId)
-            ? item.locationId
-            : [item.locationId];
-        for (const loc of locations) {
-            const locId = typeof loc === "object" ? loc?._id || loc?.id : loc;
-            if (!_nonEmpty(String(locId ?? ""))) {
-                throw new Error(
-                    "SCHEMA_VIOLATION: locationId entries must be non-empty (ANEXO v8.1 C-05)"
-                );
-            }
+        const locStr = String(item.locationId).trim();
+        if (locStr && !isValidGuid(locStr)) {
+            log.warn("locationId is not a valid GUID, accepting as-is", {
+                locationId: locStr,
+            });
         }
     }
 
-    // C-06: mainMedia Image nativo Wix (objeto con src, no URL plana)
-    if (item.mainMedia !== undefined && item.mainMedia !== null) {
-        const media = item.mainMedia;
-        const isImageObject =
-            typeof media === "object" &&
-            (_nonEmpty(media.src) || _nonEmpty(media._id) || _nonEmpty(media.fileId));
-        if (!isImageObject) {
-            throw new Error(
-                "SCHEMA_VIOLATION: mainMedia must be a Wix Image object (ANEXO v8.1 C-06)"
-            );
-        }
-    }
+    // mainMedia: acepta URL de texto O objeto Image (BIBLIA §5.7 nota 2)
+    // Pendiente ADR. No bloquear ninguna forma durante transicion.
+    // Sin validacion restrictiva.
 
-    // C-01: campo 'active' prohibido
+    // Campo 'active' prohibido (eliminado globalmente)
     if ("active" in item) {
-        throw new Error(
-            "SCHEMA_VIOLATION: ServiciosCatalogo.active prohibido (ANEXO v8.1 C-01)"
-        );
+        throw new Error("SCHEMA_VIOLATION: ServiciosCatalogo.active prohibido");
     }
 
     return true;
 }
 
 // =============================================================================
-// BLOQUE 6 - DatosFiscales ASSERTION
+// BLOQUE 5 - DatosFiscales ASSERTION
 // =============================================================================
 
 const NIF_LETRAS_DNI = "TRWAGMYFPDXBNJZSQVHLCKE";
@@ -406,9 +288,7 @@ export function assertDatosFiscales(item) {
     assertValidEnum(item.recordType, RECORD_TYPE, "recordType");
 
     if (!_nonEmpty(item.taxId) || !isValidNifOrEuVat(item.taxId)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: DatosFiscales.taxId must be a valid NIF/NIE/CIF/VAT-UE"
-        );
+        throw new Error("SCHEMA_VIOLATION: DatosFiscales.taxId must be valid NIF/NIE/CIF/VAT-UE");
     }
     if (!_nonEmpty(item.legalName)) {
         throw new Error("SCHEMA_VIOLATION: DatosFiscales requires legalName");
@@ -418,29 +298,22 @@ export function assertDatosFiscales(item) {
 
     if (item.thirdPartyType === THIRD_PARTY_TYPE.STAFF) {
         if (!_nonEmpty(item.bookingsResourceId) || !isValidGuid(item.bookingsResourceId)) {
-            throw new Error(
-                "SCHEMA_VIOLATION: thirdPartyType=STAFF requires bookingsResourceId GUID"
-            );
+            throw new Error("SCHEMA_VIOLATION: STAFF requires bookingsResourceId GUID");
         }
-        // C-03: memberId (no staffMemberId)
         if (!_nonEmpty(item.memberId)) {
-            throw new Error(
-                "SCHEMA_VIOLATION: thirdPartyType=STAFF requires memberId (ANEXO v8.1 C-03)"
-            );
+            throw new Error("SCHEMA_VIOLATION: STAFF requires memberId");
         }
     }
 
     if ("active" in item) {
-        throw new Error(
-            "SCHEMA_VIOLATION: DatosFiscales.active prohibido (ANEXO v8.1 C-01)"
-        );
+        throw new Error("SCHEMA_VIOLATION: DatosFiscales.active prohibido");
     }
 
     return true;
 }
 
 // =============================================================================
-// BLOQUE 7 - ControlOperativo ASSERTION
+// BLOQUE 6 - ControlOperativo ASSERTION
 // =============================================================================
 
 export function assertControlOperativo(item) {
@@ -454,7 +327,7 @@ export function assertControlOperativo(item) {
         throw new Error("SCHEMA_VIOLATION: ControlOperativo requires dedupeKey");
     }
     if (!_nonEmpty(item.traceId)) {
-        throw new Error("SCHEMA_VIOLATION: ControlOperativo requires traceId (SSOT-12)");
+        throw new Error("SCHEMA_VIOLATION: ControlOperativo requires traceId");
     }
 
     if (item.status !== undefined && item.status !== null) {
@@ -462,24 +335,15 @@ export function assertControlOperativo(item) {
     }
 
     if (item.controlType === CONTROL_TYPE.WEBHOOK_EVENT && !_nonEmpty(item.eventId)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: WEBHOOK_EVENT requires eventId (ADR-05)"
-        );
+        throw new Error("SCHEMA_VIOLATION: WEBHOOK_EVENT requires eventId");
     }
 
-    const ttlTypes = [
-        CONTROL_TYPE.SLOT_LOCK,
-        CONTROL_TYPE.RATE_LIMIT,
-        CONTROL_TYPE.DAYS_CACHE,
-        CONTROL_TYPE.DUAL_CACHE,
-    ];
+    const ttlTypes = [CONTROL_TYPE.SLOT_LOCK, CONTROL_TYPE.RATE_LIMIT];
     if (ttlTypes.includes(item.controlType) && !item.expiresAt) {
-        throw new Error(
-            `SCHEMA_VIOLATION: ${item.controlType} requires expiresAt`
-        );
+        throw new Error(`SCHEMA_VIOLATION: ${item.controlType} requires expiresAt`);
     }
 
-    if (item.controlType === CONTROL_TYPE.COMPENSATION && item.kind !== undefined) {
+    if (item.controlType === "COMPENSATION" && item.kind !== undefined) {
         assertValidEnum(item.kind, COMPENSATION_KIND, "kind");
     }
 
@@ -487,35 +351,25 @@ export function assertControlOperativo(item) {
 }
 
 // =============================================================================
-// BLOQUE 8 - RegistrosHorariosStaff ASSERTION (ANEXO v8.1 C-04)
+// BLOQUE 7 - RegistrosHorariosStaff ASSERTION (RD 8/2019)
 // =============================================================================
 
 export function assertRegistrosHorariosStaff(item) {
     if (!item || typeof item !== "object") {
-        throw new Error(
-            "SCHEMA_VIOLATION: RegistrosHorariosStaff item must be an object"
-        );
+        throw new Error("SCHEMA_VIOLATION: RegistrosHorariosStaff item must be an object");
     }
 
     assertValidEnum(item.clockEventType, CLOCK_EVENT_TYPE, "clockEventType");
     assertValidEnum(item.recordType, RECORD_TYPE_HORARIOS, "recordType");
 
     if (!_nonEmpty(item.traceId)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: RegistrosHorariosStaff requires traceId (SSOT-12)"
-        );
+        throw new Error("SCHEMA_VIOLATION: RegistrosHorariosStaff requires traceId");
     }
     if (!_nonEmpty(item.resourceId) || !isValidGuid(item.resourceId)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: RegistrosHorariosStaff.resourceId must be a valid GUID"
-        );
+        throw new Error("SCHEMA_VIOLATION: RegistrosHorariosStaff.resourceId must be valid GUID");
     }
-
-    // C-04: memberId (no staffMemberId)
     if (!_nonEmpty(item.memberId)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: RegistrosHorariosStaff requires memberId (ANEXO v8.1 C-04)"
-        );
+        throw new Error("SCHEMA_VIOLATION: RegistrosHorariosStaff requires memberId");
     }
 
     if (
@@ -523,143 +377,60 @@ export function assertRegistrosHorariosStaff(item) {
             item.clockEventType === CLOCK_EVENT_TYPE.AJUSTE) &&
         !_nonEmpty(item.adjustmentReason)
     ) {
-        throw new Error(
-            "SCHEMA_VIOLATION: AJUSTE requires adjustmentReason (RD 8/2019)"
-        );
+        throw new Error("SCHEMA_VIOLATION: AJUSTE requires adjustmentReason (RD 8/2019)");
     }
 
     if (!item.recordedAt || isNaN(new Date(item.recordedAt).getTime())) {
-        throw new Error(
-            "SCHEMA_VIOLATION: RegistrosHorariosStaff.recordedAt must be a valid timestamp"
-        );
+        throw new Error("SCHEMA_VIOLATION: RegistrosHorariosStaff.recordedAt must be valid");
     }
 
     return true;
 }
 
 // =============================================================================
-// BLOQUE 9 - MovimientosInventario ASSERTION (BIBLIA 13.1)
+// BLOQUE 8 - MovimientosInventario ASSERTION
 // =============================================================================
 
-const INVENTORY_LEGACY_TYPE_MAP = Object.freeze({
-    ENTRADA: INVENTORY_MOVEMENT_TYPE.ENTRADA_STOCK,
-    SALIDA: INVENTORY_MOVEMENT_TYPE.SALIDA_STOCK,
-    STOCK_IN: INVENTORY_MOVEMENT_TYPE.ENTRADA_STOCK,
-    STOCK_OUT: INVENTORY_MOVEMENT_TYPE.SALIDA_STOCK,
-    COMPRA: INVENTORY_MOVEMENT_TYPE.ENTRADA_STOCK,
-    PURCHASE: INVENTORY_MOVEMENT_TYPE.ENTRADA_STOCK,
-    SALE: INVENTORY_MOVEMENT_TYPE.VENTA,
-    WASTE: INVENTORY_MOVEMENT_TYPE.AJUSTE,
-    MERMA: INVENTORY_MOVEMENT_TYPE.AJUSTE,
-    AJUSTE_POSITIVO: INVENTORY_MOVEMENT_TYPE.AJUSTE,
-    AJUSTE_NEGATIVO: INVENTORY_MOVEMENT_TYPE.AJUSTE,
-    TRASLADO_ENTRADA: INVENTORY_MOVEMENT_TYPE.TRANSFERENCIA,
-    TRASLADO_SALIDA: INVENTORY_MOVEMENT_TYPE.TRANSFERENCIA,
-    ONLINE_SALE: INVENTORY_MOVEMENT_TYPE.VENTA,
-    VENTA_ONLINE: INVENTORY_MOVEMENT_TYPE.VENTA,
-});
-
-export function normalizeInventoryMovementType(raw) {
-    const s = String(raw ?? "").trim().toUpperCase();
-    if (!s) return s;
-    const direct = Object.values(INVENTORY_MOVEMENT_TYPE);
-    if (direct.includes(s)) return s;
-    const mapped = INVENTORY_LEGACY_TYPE_MAP[_canonicalKey(s)];
-    if (mapped !== undefined) {
-        log.warn("legacy inventory movementType normalized on read", {
-            raw: s,
-            canonical: mapped,
-        });
-        return mapped;
+export function assertMovimientosInventario(item) {
+    if (!item || typeof item !== "object") {
+        throw new Error("SCHEMA_VIOLATION: MovimientosInventario item must be an object");
     }
-    return s;
+
+    assertValidEnum(item.movementType, INVENTORY_MOVEMENT_TYPE, "movementType");
+
+    if (!_nonEmpty(item.movementToken)) {
+        throw new Error("SCHEMA_VIOLATION: MovimientosInventario requires movementToken");
+    }
+    if (!_nonEmpty(item.traceId)) {
+        throw new Error("SCHEMA_VIOLATION: MovimientosInventario requires traceId");
+    }
+    if (!_nonEmpty(item.sku)) {
+        throw new Error("SCHEMA_VIOLATION: MovimientosInventario requires sku");
+    }
+
+    if (item.movementType === INVENTORY_MOVEMENT_TYPE.AJUSTE && !_nonEmpty(item.operationDescription)) {
+        throw new Error("SCHEMA_VIOLATION: AJUSTE requires operationDescription");
+    }
+
+    const delta = Number(item.quantityDelta);
+    if (!Number.isFinite(delta) || delta === 0) {
+        throw new Error("SCHEMA_VIOLATION: quantityDelta cannot be 0");
+    }
+
+    return true;
 }
 
 export function expectedInventoryMagnitude(movementType, quantityDelta) {
-    const t = normalizeInventoryMovementType(movementType);
-    if (POSITIVE_INVENTORY_MOVEMENT_TYPES.includes(t)) return MAGNITUDE.POSITIVE;
-    if (NEGATIVE_INVENTORY_MOVEMENT_TYPES.includes(t)) return MAGNITUDE.NEGATIVE;
+    if (POSITIVE_INVENTORY_MOVEMENT_TYPES.includes(movementType)) return MAGNITUDE.POSITIVE;
+    if (NEGATIVE_INVENTORY_MOVEMENT_TYPES.includes(movementType)) return MAGNITUDE.NEGATIVE;
     const d = Number(quantityDelta);
     if (Number.isFinite(d) && d > 0) return MAGNITUDE.POSITIVE;
     if (Number.isFinite(d) && d < 0) return MAGNITUDE.NEGATIVE;
     return MAGNITUDE.NEUTRAL;
 }
 
-export function assertMovimientosInventario(item) {
-    if (!item || typeof item !== "object") {
-        throw new Error(
-            "SCHEMA_VIOLATION: MovimientosInventario item must be an object"
-        );
-    }
-
-    const canonicalType = normalizeInventoryMovementType(item.movementType);
-    assertValidEnum(canonicalType, INVENTORY_MOVEMENT_TYPE, "movementType");
-    item.movementType = canonicalType;
-
-    if (!_nonEmpty(item.movementToken)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: MovimientosInventario requires movementToken (idempotencia)"
-        );
-    }
-    if (!_nonEmpty(item.traceId)) {
-        throw new Error(
-            "SCHEMA_VIOLATION: MovimientosInventario requires traceId (SSOT-12)"
-        );
-    }
-    if (!_nonEmpty(item.sku)) {
-        throw new Error("SCHEMA_VIOLATION: MovimientosInventario requires sku");
-    }
-
-    if (
-        canonicalType === INVENTORY_MOVEMENT_TYPE.AJUSTE &&
-        !_nonEmpty(item.operationDescription)
-    ) {
-        throw new Error(
-            "SCHEMA_VIOLATION: AJUSTE requires operationDescription"
-        );
-    }
-
-    const delta = Number(item.quantityDelta);
-    if (!Number.isFinite(delta) || delta === 0) {
-        throw new Error(
-            `SCHEMA_VIOLATION: quantityDelta (${String(item.quantityDelta)}) cannot be 0`
-        );
-    }
-
-    const qty = Number(item.quantity);
-    if (item.quantity !== undefined && item.quantity !== null) {
-        if (!Number.isFinite(qty) || qty <= 0) {
-            throw new Error(
-                `SCHEMA_VIOLATION: quantity (${String(item.quantity)}) must be > 0`
-            );
-        }
-        if (Math.abs(Math.abs(delta) - qty) > 0.001) {
-            throw new Error(
-                `SCHEMA_VIOLATION: |quantityDelta| (${Math.abs(delta)}) must match quantity (${qty})`
-            );
-        }
-    }
-
-    const before = Number(item.stockBefore);
-    const after = Number(item.stockAfter);
-    if (
-        item.stockBefore !== undefined &&
-        item.stockAfter !== undefined &&
-        Number.isFinite(before) &&
-        Number.isFinite(after)
-    ) {
-        if (Math.abs(before + delta - after) > 0.001) {
-            throw new Error(
-                `SCHEMA_VIOLATION: stockAfter (${after}) != stockBefore (${before}) + quantityDelta (${delta})`
-            );
-        }
-    }
-
-    return true;
-}
-
 // =============================================================================
-// BLOQUE 10 - DOMAIN ENUM ASSERTIONS
+// BLOQUE 9 - DOMAIN ENUM ASSERTIONS
 // =============================================================================
 
 export function assertMovementType(value) {
@@ -668,6 +439,10 @@ export function assertMovementType(value) {
 
 export function assertPaymentMethod(value) {
     return assertValidEnum(value, PAYMENT_METHOD, "paymentMethod");
+}
+
+export function assertChannelType(value) {
+    return assertValidEnum(value, CHANNEL_TYPE, "channelType");
 }
 
 export function assertItemNature(value) {
@@ -686,84 +461,10 @@ export function assertCompensationKind(value) {
     return assertValidEnum(value, COMPENSATION_KIND, "kind");
 }
 
-export function assertChannelType(value) {
-    return assertValidEnum(value, CHANNEL_TYPE, "channelType");
-}
-
 export function assertControlType(value) {
     return assertValidEnum(value, CONTROL_TYPE, "controlType");
 }
 
 export function assertClockEventType(value) {
     return assertValidEnum(value, CLOCK_EVENT_TYPE, "clockEventType");
-}
-
-// =============================================================================
-// BLOQUE 11 - WIX ECOM PAYMENT METHOD BOUNDARY (ADR-05)
-// OFFLINE/MEMBERSHIP nunca se persisten como metodo real.
-// =============================================================================
-
-export const WIX_PAYMENT_METHODS = Object.freeze({
-    OFFLINE: "Offline",
-    MEMBERSHIP: "Membership",
-    CREDIT_CARD: "CreditCard",
-    DEBIT_CARD: "DebitCard",
-    WALLET: "Wallet",
-    BANK_TRANSFER: "BankTransfer",
-});
-
-export const REAL_PAYMENT_METHODS = Object.freeze({
-    EFECTIVO: PAYMENT_METHOD.EFECTIVO,
-    TARJETA: PAYMENT_METHOD.TARJETA,
-    BIZUM: PAYMENT_METHOD.BIZUM,
-    ONLINE: PAYMENT_METHOD.ONLINE,
-    TARJETA_REGALO: PAYMENT_METHOD.TARJETA_REGALO,
-});
-
-export function normalizeWixPaymentMethod(wixMethod, medioReal) {
-    const w = String(wixMethod ?? "").trim();
-    const real = String(medioReal ?? "").trim().toUpperCase();
-
-    if (w === WIX_PAYMENT_METHODS.OFFLINE) {
-        if (
-            [
-                REAL_PAYMENT_METHODS.EFECTIVO,
-                REAL_PAYMENT_METHODS.TARJETA,
-                REAL_PAYMENT_METHODS.BIZUM,
-            ].includes(real)
-        ) {
-            return real;
-        }
-        log.warn("OFFLINE wix payment with indeterminable medioReal, defaulting EFECTIVO", {
-            wixMethod: w,
-            medioReal: real,
-        });
-        return REAL_PAYMENT_METHODS.EFECTIVO;
-    }
-
-    if (w === WIX_PAYMENT_METHODS.MEMBERSHIP) {
-        log.warn("MEMBERSHIP wix payment normalized to TARJETA_REGALO per ADR-05", {
-            wixMethod: w,
-        });
-        return REAL_PAYMENT_METHODS.TARJETA_REGALO;
-    }
-
-    if (
-        w === WIX_PAYMENT_METHODS.CREDIT_CARD ||
-        w === WIX_PAYMENT_METHODS.DEBIT_CARD ||
-        w === WIX_PAYMENT_METHODS.WALLET
-    ) {
-        return REAL_PAYMENT_METHODS.TARJETA;
-    }
-
-    if (w === WIX_PAYMENT_METHODS.BANK_TRANSFER) {
-        return REAL_PAYMENT_METHODS.ONLINE;
-    }
-
-    if (real && real !== "OFFLINE" && real !== "MEMBERSHIP") return real;
-
-    log.warn("unknown wix payment method, defaulting EFECTIVO with warn", {
-        wixMethod: w,
-    });
-    return REAL_PAYMENT_METHODS.EFECTIVO;
 }
